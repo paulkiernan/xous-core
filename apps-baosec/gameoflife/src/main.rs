@@ -1,25 +1,57 @@
-// Conway's Game of Life for the DC34 badge (baosec target).
+// Conway's Game of Life for the DC34 badge (baosec-lite target).
 //
 // On baosec there is no gam service: apps draw straight to the badge's display
 // through the Gfx API served by bao-video (which owns the camera + OLED). This
 // app takes over the entire 128x128 framebuffer and renders a toroidal life
 // field at ~4.5 generations/second. Each frame clears to black, batches the
-// live cells as 1px filled rectangles in white (flushing the list when it nears
-// a page), then flushes the framebuffer to the display.
+// live cells as 1px filled rectangles in white (flushing the list when it
+// nears a page), then flushes the framebuffer to the display.
 //
-// Seeded with a Gosper glider gun, gliders, an R-pentomino and a few still
-// lifes; the toroidal wrap makes patterns circulate forever.
+// Power management mirrors the stock badge firmware: the LIS2DH12 accelerometer
+// motion interrupt is routed to this app; when the badge hasn't moved for
+// IDLE_SECS the app stops pumping (so the kernel parks the CPU in WFI), turns
+// the OLED off, and sleeps until motion wakes it back up. On the hosted
+// emulator there is no accelerometer, so power management is disabled and the
+// app runs continuously.
 
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(target_os = "none", no_main)]
 
+use num_traits::*;
 use ux_api::minigfx::*;
 use ux_api::service::gfx::Gfx;
+use xous::Message;
+
+#[cfg(not(feature = "hosted-baosec"))]
+mod power;
 
 const MAX_W: isize = 128;
 const MAX_H: isize = 128;
 const MAX_WORDS: usize = (MAX_W as usize) * (MAX_H as usize) / 32;
 const TICK_MS: usize = 220; // ~4.5 generations per second
+/// seconds of no motion before the badge idles (screen off, CPU parked in WFI)
+const IDLE_SECS: u64 = 60;
+
+pub(crate) const GOL_SERVER_NAME: &str = "_Game of Life_";
+
+#[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
+enum GolOp {
+    /// advance one generation and redraw
+    Pump = 0,
+    /// accelerometer motion interrupt fired (wake source)
+    Motion = 1,
+    /// exit the application
+    Quit = 2,
+}
+
+/// control messages for the pump thread
+#[derive(Debug, num_derive::FromPrimitive, num_derive::ToPrimitive)]
+enum PumpOp {
+    Run,
+    Stop,
+    Pump,
+    Quit,
+}
 
 struct Gol {
     gfx: Gfx,
@@ -28,14 +60,66 @@ struct Gol {
     /// current generation bitboard; bit = 1 => live cell, row-major, LSB-first
     cur: [u32; MAX_WORDS],
     next: [u32; MAX_WORDS],
+    tt: ticktimer_server::Ticktimer,
+    /// timestamp (ms) of the last accelerometer motion event
+    last_motion_ms: u64,
+    /// true once we've gone to sleep (pump stopped, screen off)
+    idle: bool,
+    /// connection to the pump thread's control server
+    pump_cid: Option<xous::CID>,
+    /// accelerometer motion wake (badge only)
+    #[cfg(not(feature = "hosted-baosec"))]
+    power: Option<power::Power>,
 }
 
 impl Gol {
     fn new(gfx: Gfx, screensize: Point) -> Self {
         assert_eq!(screensize.x, MAX_W, "expected a full-width display");
-        let mut gol = Gol { gfx, w: screensize.x, h: screensize.y, cur: [0; MAX_WORDS], next: [0; MAX_WORDS] };
+        let tt = ticktimer_server::Ticktimer::new().unwrap();
+        let now = tt.elapsed_ms();
+        let mut gol = Gol {
+            gfx,
+            w: screensize.x,
+            h: screensize.y,
+            cur: [0; MAX_WORDS],
+            next: [0; MAX_WORDS],
+            tt,
+            last_motion_ms: now,
+            idle: false,
+            pump_cid: None,
+            #[cfg(not(feature = "hosted-baosec"))]
+            power: None,
+        };
         gol.seed();
         gol
+    }
+
+    /// true when the accelerometer is present and the motion IRQ is armed
+    fn power_active(&self) -> bool {
+        #[cfg(not(feature = "hosted-baosec"))]
+        {
+            self.power.is_some()
+        }
+        #[cfg(feature = "hosted-baosec")]
+        {
+            false
+        }
+    }
+
+    /// initialize the accelerometer motion wake (badge only; no-op on the emu)
+    fn arm_power(&mut self, sid: xous::SID) {
+        #[cfg(not(feature = "hosted-baosec"))]
+        {
+            self.power = power::Power::new(sid, GolOp::Motion.to_usize().unwrap());
+            if self.power.is_some() {
+                log::info!("power management armed");
+            }
+        }
+        #[cfg(feature = "hosted-baosec")]
+        {
+            let _ = sid;
+            log::info!("power management disabled (hosted emulator)");
+        }
     }
 
     fn set(&mut self, x: isize, y: isize, alive: bool) {
@@ -127,6 +211,59 @@ impl Gol {
         self.gfx.flush().expect("couldn't flush display");
     }
 
+    /// one animation tick: advance + draw, then check the idle timer
+    fn on_pump(&mut self) {
+        if self.idle {
+            return;
+        }
+        self.step();
+        self.draw();
+        if self.power_active() {
+            let now = self.tt.elapsed_ms();
+            if now.saturating_sub(self.last_motion_ms) > IDLE_SECS * 1000 {
+                self.enter_idle();
+            }
+        }
+    }
+
+    /// stop pumping + kill the screen; the kernel then parks the CPU in WFI
+    fn enter_idle(&mut self) {
+        log::info!("no motion for {}s -- idle (screen off)", IDLE_SECS);
+        self.idle = true;
+        if let Some(cid) = self.pump_cid {
+            xous::send_message(
+                cid,
+                Message::new_scalar(PumpOp::Stop.to_usize().unwrap(), 0, 0, 0, 0),
+            )
+            .ok();
+        }
+        #[cfg(feature = "board-baosec")]
+        self.gfx.set_power(false).ok();
+    }
+
+    /// accelerometer motion: refresh the idle timer; if asleep, wake up
+    fn on_motion(&mut self) {
+        #[cfg(not(feature = "hosted-baosec"))]
+        if let Some(p) = self.power.as_mut() {
+            p.clear_motion_irq();
+        }
+        self.last_motion_ms = self.tt.elapsed_ms();
+        if self.idle {
+            log::info!("motion detected -- waking up");
+            self.idle = false;
+            #[cfg(feature = "board-baosec")]
+            self.gfx.set_power(true).ok();
+            if let Some(cid) = self.pump_cid {
+                xous::send_message(
+                    cid,
+                    Message::new_scalar(PumpOp::Run.to_usize().unwrap(), 0, 0, 0, 0),
+                )
+                .ok();
+            }
+            self.draw();
+        }
+    }
+
     /// seed a Gosper glider gun, gliders, an R-pentomino and a few still lifes
     fn seed(&mut self) {
         self.put_pattern(GOSPER_GUN, 5, 5);
@@ -149,6 +286,94 @@ impl Gol {
             }
         }
     }
+}
+
+/// background thread that paces the simulation. While running it sends a
+/// blocking Pump every TICK_MS; when stopped it blocks on its control server
+/// with no timers armed, letting the kernel park the CPU in WFI.
+fn pump_thread(cid_to_main: xous::CID, pump_sid: xous::SID) {
+    let _ = std::thread::spawn(move || {
+        let tt = ticktimer_server::Ticktimer::new().unwrap();
+        let cid_to_self = xous::connect(pump_sid).unwrap();
+        let mut run = false;
+        loop {
+            let msg = xous::receive_message(pump_sid).unwrap();
+            match FromPrimitive::from_usize(msg.body.id()) {
+                Some(PumpOp::Run) => {
+                    run = true;
+                    xous::send_message(
+                        cid_to_self,
+                        Message::new_scalar(PumpOp::Pump.to_usize().unwrap(), 0, 0, 0, 0),
+                    )
+                    .ok();
+                }
+                Some(PumpOp::Stop) => run = false,
+                Some(PumpOp::Pump) => {
+                    xous::send_message(
+                        cid_to_main,
+                        Message::new_blocking_scalar(GolOp::Pump.to_usize().unwrap(), 0, 0, 0, 0),
+                    )
+                    .ok();
+                    if run {
+                        tt.sleep_ms(TICK_MS).unwrap();
+                        xous::send_message(
+                            cid_to_self,
+                            Message::new_scalar(PumpOp::Pump.to_usize().unwrap(), 0, 0, 0, 0),
+                        )
+                        .ok();
+                    }
+                }
+                Some(PumpOp::Quit) => break,
+                _ => log::error!("unknown pump message: {:?}", msg),
+            }
+        }
+        xous::destroy_server(pump_sid).ok();
+    });
+}
+
+fn main() -> ! {
+    log_server::init_wait().unwrap();
+    log::set_max_level(log::LevelFilter::Info);
+    log::info!("Game of Life PID is {}", xous::process::id());
+
+    let xns = xous_names::XousNames::new().unwrap();
+    let gfx = Gfx::new(&xns).expect("can't connect to GFX");
+    let screensize = gfx.screen_size().expect("couldn't get screen size");
+    log::info!("game of life screen: {}x{}", screensize.x, screensize.y);
+
+    let sid = xns.register_name(GOL_SERVER_NAME, None).expect("can't register server");
+
+    let mut gol = Gol::new(gfx, screensize);
+    gol.draw(); // first paint
+
+    // accelerometer motion wake (badge only; no-op on the emulator)
+    gol.arm_power(sid);
+
+    // pump thread: drive the animation; stopped while idle so the CPU sleeps
+    let pump_sid = xous::create_server().unwrap();
+    let cid_to_pump = xous::connect(pump_sid).unwrap();
+    pump_thread(xous::connect(sid).unwrap(), pump_sid);
+    gol.pump_cid = Some(cid_to_pump);
+    xous::send_message(
+        cid_to_pump,
+        Message::new_scalar(PumpOp::Run.to_usize().unwrap(), 0, 0, 0, 0),
+    )
+    .ok();
+
+    loop {
+        let msg = xous::receive_message(sid).unwrap();
+        match FromPrimitive::from_usize(msg.body.id()) {
+            Some(GolOp::Pump) => {
+                gol.on_pump();
+                xous::return_scalar(msg.sender, 1).ok();
+            }
+            Some(GolOp::Motion) => gol.on_motion(),
+            Some(GolOp::Quit) => break,
+            _ => log::debug!("unknown message: {:?}", msg),
+        }
+    }
+    log::info!("Game of Life quitting");
+    xous::terminate_process(0)
 }
 
 // Gosper glider gun -- fires a glider down its row every 30 generations
@@ -175,25 +400,3 @@ const BLOCK: &[&str] = &["**", "**"];
 const BEEHIVE: &[&str] = &[".**.", "*..*", ".**."];
 
 const LOAF: &[&str] = &[".**.", "*..*", ".*.*", "..*."];
-
-fn main() -> ! {
-    log_server::init_wait().unwrap();
-    log::set_max_level(log::LevelFilter::Info);
-    log::info!("Game of Life PID is {}", xous::process::id());
-
-    let xns = xous_names::XousNames::new().unwrap();
-    let gfx = Gfx::new(&xns).expect("can't connect to GFX");
-    let screensize = gfx.screen_size().expect("couldn't get screen size");
-    log::info!("game of life screen: {}x{}", screensize.x, screensize.y);
-
-    let gol = Gol::new(gfx, screensize);
-    gol.draw(); // first paint
-
-    let tt = ticktimer_server::Ticktimer::new().unwrap();
-    let mut gol = gol;
-    loop {
-        tt.sleep_ms(TICK_MS).unwrap();
-        gol.step();
-        gol.draw();
-    }
-}

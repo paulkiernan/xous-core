@@ -2952,7 +2952,11 @@ dependencies = [
 name = "gameoflife"
 version = "0.1.0"
 dependencies = [
+ "bao1x-api 0.1.3",
+ "bao1x-hal",
  "log",
+ "num-derive 0.4.2",
+ "num-traits",
  "ux-api",
  "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
  "xous-api-log",

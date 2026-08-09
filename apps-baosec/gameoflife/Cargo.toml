@@ -5,11 +5,22 @@ edition = "2021"
 
 [dependencies]
 log = "0.4.14"
+num-derive = { version = "0.4.2", default-features = false }
+num-traits = { version = "0.2.14", default-features = false }
 xous = "0.9.70"
 log-server = { package = "xous-api-log", version = "0.1.69" }
 xous-names = { package = "xous-api-names", version = "0.9.71" }
 ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.70" }
 ux-api = { path = "../../libs/ux-api" }
+bao1x-api = { path = "../../libs/bao1x-api" }
+bao1x-hal = { path = "../../libs/bao1x-hal", features = ["sensor-lis2dh12"] }
 
 [features]
 default = []
+# build-time features injected by the xtask for each target; declared here so
+# cargo accepts them when building this app as part of a baosec image
+hosted-baosec = []
+board-baosec = []
+oem-baosec-lite = []
+bao1x = []
+swap = []
