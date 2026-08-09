@@ -363,7 +363,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "modals",
                 "pddb",
                 "bao-video",
-                "vault2",
             ];
             builder.add_feature("pddbtest");
             builder

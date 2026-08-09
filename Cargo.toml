@@ -120,6 +120,7 @@ members = [
   "services/keystore",
   "libs/precursor-hal",
   "apps-baosec/vault2",
+  "apps-baosec/gameoflife",
   "baremetal",
   "bao1x-boot/boot0",
   "bao1x-boot/boot1",

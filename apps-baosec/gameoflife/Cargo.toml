@@ -1,0 +1,15 @@
+[package]
+name = "gameoflife"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = "0.4.14"
+xous = "0.9.70"
+log-server = { package = "xous-api-log", version = "0.1.69" }
+xous-names = { package = "xous-api-names", version = "0.9.71" }
+ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.70" }
+ux-api = { path = "../../libs/ux-api" }
+
+[features]
+default = []

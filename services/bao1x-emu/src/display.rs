@@ -97,6 +97,9 @@ pub struct Oled128x128 {
     // front and back buffers
     buffer: [u32; WIDTH as usize * HEIGHT as usize / (core::mem::size_of::<u32>() * 8)],
     stash: [u32; WIDTH as usize * HEIGHT as usize / (core::mem::size_of::<u32>() * 8)],
+    // headless framebuffer capture state (BAO_EMU_DUMP_DIR)
+    dump_count: u64,
+    last_dump: std::time::Instant,
 }
 
 impl<'a> Oled128x128 {
@@ -117,6 +120,8 @@ impl<'a> Oled128x128 {
             native_buffer,
             buffer: [0u32; WIDTH as usize * HEIGHT as usize / (core::mem::size_of::<u32>() * 8)],
             stash: [0u32; WIDTH as usize * HEIGHT as usize / (core::mem::size_of::<u32>() * 8)],
+            dump_count: 0,
+            last_dump: std::time::Instant::now() - std::time::Duration::from_secs(1),
         }
     }
 
@@ -154,6 +159,35 @@ impl<'a> Oled128x128 {
     }
 
     pub fn init(&mut self) -> Result<(), xous::Error> { Ok(()) }
+
+    /// Headless verification hook: when the `BAO_EMU_DUMP_DIR` env var is set, each
+    /// flushed frame is written as a binary PPM (pure black/white) into that directory,
+    /// throttled to 20 fps. This lets CI-style checks verify the rendered display
+    /// without needing a window server. Gated on an env var so normal use is untouched.
+    fn maybe_dump_frame(&mut self) {
+        let dir = match std::env::var("BAO_EMU_DUMP_DIR") {
+            Ok(dir) => dir,
+            Err(_) => return,
+        };
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_dump) < std::time::Duration::from_millis(50) {
+            return;
+        }
+        self.last_dump = now;
+        let (w, h) = (COLUMN as usize, ROW as usize);
+        let mut ppm = Vec::with_capacity(3 + 12 + 3 + w * h * 3);
+        ppm.extend_from_slice(format!("P6\n{} {}\n255\n", w, h).as_bytes());
+        {
+            let buf = self.native_buffer.lock().unwrap();
+            for pixel in buf.iter() {
+                let (r, g, b) = if *pixel == DARK_COLOUR { (0u8, 0u8, 0u8) } else { (255u8, 255u8, 255u8) };
+                ppm.extend_from_slice(&[r, g, b]);
+            }
+        }
+        let path = std::path::Path::new(&dir).join(format!("frame_{:06}.ppm", self.dump_count));
+        let _ = std::fs::write(&path, &ppm);
+        self.dump_count += 1;
+    }
 }
 
 impl FrameBuffer for Oled128x128 {
@@ -162,6 +196,7 @@ impl FrameBuffer for Oled128x128 {
             *pixel =
                 if (self.buffer[index / 32] & (1 << (index % 32))) != 0 { DARK_COLOUR } else { LIGHT_COLOUR }
         }
+        self.maybe_dump_frame();
         Ok(())
     }
 
@@ -220,6 +255,15 @@ impl FrameBuffer for Oled128x128 {
 
 impl MinifbThread {
     pub fn run_while(self, mut predicate: impl FnMut() -> bool) {
+        // Headless capture mode: no window is created. Frames are dumped from
+        // `Oled128x128::maybe_dump_frame()` instead; this loop only keeps the
+        // main thread alive so the rest of the system runs normally.
+        if std::env::var("BAO_EMU_DUMP_DIR").is_ok() {
+            while predicate() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            std::process::exit(0);
+        }
         let mut window = Window::new(
             "baosec",
             COLUMN as usize,

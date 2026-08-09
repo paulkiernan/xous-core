@@ -2949,6 +2949,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gameoflife"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "ux-api",
+ "xous 0.9.70 (registry+https://github.com/rust-lang/crates.io-index)",
+ "xous-api-log",
+ "xous-api-names",
+ "xous-api-ticktimer",
+]
+
+[[package]]
 name = "gcd"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
