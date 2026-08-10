@@ -100,6 +100,7 @@ pub struct Oled128x128 {
     // headless framebuffer capture state (BAO_EMU_DUMP_DIR)
     dump_count: u64,
     last_dump: std::time::Instant,
+    boot_time: std::time::Instant,
 }
 
 impl<'a> Oled128x128 {
@@ -122,6 +123,7 @@ impl<'a> Oled128x128 {
             stash: [0u32; WIDTH as usize * HEIGHT as usize / (core::mem::size_of::<u32>() * 8)],
             dump_count: 0,
             last_dump: std::time::Instant::now() - std::time::Duration::from_secs(1),
+            boot_time: std::time::Instant::now(),
         }
     }
 
@@ -170,7 +172,7 @@ impl<'a> Oled128x128 {
             Err(_) => return,
         };
         let now = std::time::Instant::now();
-        if now.duration_since(self.last_dump) < std::time::Duration::from_millis(50) {
+        if now.duration_since(self.last_dump) < std::time::Duration::from_millis(10) {
             return;
         }
         self.last_dump = now;
@@ -186,6 +188,14 @@ impl<'a> Oled128x128 {
         }
         let path = std::path::Path::new(&dir).join(format!("frame_{:06}.ppm", self.dump_count));
         let _ = std::fs::write(&path, &ppm);
+        if self.dump_count < 6 {
+            log::info!(
+                "emu dump frame {} at t+{:?} wall {:?}",
+                self.dump_count,
+                now.duration_since(self.boot_time),
+                std::time::SystemTime::now()
+            );
+        }
         self.dump_count += 1;
     }
 }

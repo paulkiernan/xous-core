@@ -2,10 +2,12 @@
 //
 // On baosec there is no gam service: apps draw straight to the badge's display
 // through the Gfx API served by bao-video (which owns the camera + OLED). This
-// app takes over the entire 128x128 framebuffer and renders a toroidal life
-// field at ~4.5 generations/second. Each frame clears to black, batches the
-// live cells as 1px filled rectangles in white (flushing the list when it
-// nears a page), then flushes the framebuffer to the display.
+// app takes over the entire 128x128 framebuffer. On boot it shows a "ZEROCOOL"
+// cracktro-style splash card (dithered gradient title + small font captions);
+// after SPLASH_MS those very pixels become the initial population and a
+// toroidal life field evolves at ~4.5 generations/second. Each frame clears to
+// black, batches the live cells as 1px filled rectangles in white (flushing
+// the list when it nears a page), then flushes the framebuffer to the display.
 //
 // Power management mirrors the stock badge firmware: the LIS2DH12 accelerometer
 // motion interrupt is routed to this app; when the badge hasn't moved for
@@ -24,11 +26,14 @@ use xous::Message;
 
 #[cfg(not(feature = "hosted-baosec"))]
 mod power;
+mod splash;
 
 const MAX_W: isize = 128;
 const MAX_H: isize = 128;
 const MAX_WORDS: usize = (MAX_W as usize) * (MAX_H as usize) / 32;
 const TICK_MS: usize = 220; // ~4.5 generations per second
+/// how long the ZEROCOOL splash stays up before the simulation starts
+const SPLASH_MS: usize = 5000;
 /// seconds of no motion before the badge idles (screen off, CPU parked in WFI)
 const IDLE_SECS: u64 = 60;
 
@@ -90,7 +95,6 @@ impl Gol {
             #[cfg(not(feature = "hosted-baosec"))]
             power: None,
         };
-        gol.seed();
         gol
     }
 
@@ -119,18 +123,6 @@ impl Gol {
         {
             let _ = sid;
             log::info!("power management disabled (hosted emulator)");
-        }
-    }
-
-    fn set(&mut self, x: isize, y: isize, alive: bool) {
-        if x < 0 || x >= self.w || y < 0 || y >= self.h {
-            return;
-        }
-        let bit = (y * self.w + x) as usize;
-        if alive {
-            self.cur[bit / 32] |= 1 << (bit % 32);
-        } else {
-            self.cur[bit / 32] &= !(1 << (bit % 32));
         }
     }
 
@@ -264,27 +256,13 @@ impl Gol {
         }
     }
 
-    /// seed a Gosper glider gun, gliders, an R-pentomino and a few still lifes
-    fn seed(&mut self) {
-        self.put_pattern(GOSPER_GUN, 5, 5);
-        self.put_pattern(GLIDER_SE, 40, 30);
-        self.put_pattern(GLIDER_SE, 60, 45);
-        self.put_pattern(GLIDER_NE, 80, 20);
-        self.put_pattern(R_PENTOMINO, 100, 60);
-        self.put_pattern(BLOCK, 5, 105);
-        self.put_pattern(BEEHIVE, 30, 110);
-        self.put_pattern(LOAF, 70, 112);
-    }
-
-    /// blit a pattern's rows of '*' (alive) / '.' (dead) starting at (ox, oy)
-    fn put_pattern(&mut self, pattern: &[&str], ox: isize, oy: isize) {
-        for (row, line) in pattern.iter().enumerate() {
-            for (col, ch) in line.chars().enumerate() {
-                if ch == '*' {
-                    self.set(ox + col as isize, oy + row as isize, true);
-                }
-            }
-        }
+    /// render the ZEROCOOL splash into the bitboard and display it; the
+    /// splash pixels become the simulation's initial population
+    fn show_splash(&mut self) {
+        splash::render(&mut self.cur, self.w, self.h);
+        let n: u32 = self.cur.iter().map(|w| w.count_ones()).sum();
+        log::info!("splash rendered: {} on-pixels", n);
+        self.draw();
     }
 }
 
@@ -296,11 +274,20 @@ fn pump_thread(cid_to_main: xous::CID, pump_sid: xous::SID) {
         let tt = ticktimer_server::Ticktimer::new().unwrap();
         let cid_to_self = xous::connect(pump_sid).unwrap();
         let mut run = false;
+        let mut first_run = true;
         loop {
             let msg = xous::receive_message(pump_sid).unwrap();
             match FromPrimitive::from_usize(msg.body.id()) {
                 Some(PumpOp::Run) => {
                     run = true;
+                    // hold the splash for SPLASH_MS before the first generation
+                    if first_run {
+                        first_run = false;
+                        let t0 = tt.elapsed_ms();
+                        log::info!("splash hold: {} ms (t={})", SPLASH_MS, t0);
+                        tt.sleep_ms(SPLASH_MS).unwrap();
+                        log::info!("splash hold done (t={}, took {} ms)", tt.elapsed_ms(), tt.elapsed_ms() - t0);
+                    }
                     xous::send_message(
                         cid_to_self,
                         Message::new_scalar(PumpOp::Pump.to_usize().unwrap(), 0, 0, 0, 0),
@@ -344,7 +331,7 @@ fn main() -> ! {
     let sid = xns.register_name(GOL_SERVER_NAME, None).expect("can't register server");
 
     let mut gol = Gol::new(gfx, screensize);
-    gol.draw(); // first paint
+    gol.show_splash(); // ZEROCOOL card; its pixels seed the simulation
 
     // accelerometer motion wake (badge only; no-op on the emulator)
     gol.arm_power(sid);
@@ -375,28 +362,3 @@ fn main() -> ! {
     log::info!("Game of Life quitting");
     xous::terminate_process(0)
 }
-
-// Gosper glider gun -- fires a glider down its row every 30 generations
-const GOSPER_GUN: &[&str] = &[
-    "........................*...........",
-    "......................*.*...........",
-    "............**......**............**",
-    "...........*...*....**............**",
-    "**........*.....*...**..............",
-    "**........*...*.**....*.*...........",
-    "..........*.....*.......*...........",
-    "...........*...*....................",
-    "............**......................",
-];
-
-const GLIDER_SE: &[&str] = &[".*.", "..*", "***"];
-
-const GLIDER_NE: &[&str] = &[".*.", "*..", "***"];
-
-const R_PENTOMINO: &[&str] = &[".**", "**.", ".*."];
-
-const BLOCK: &[&str] = &["**", "**"];
-
-const BEEHIVE: &[&str] = &[".**.", "*..*", ".**."];
-
-const LOAF: &[&str] = &[".**.", "*..*", ".*.*", "..*."];
