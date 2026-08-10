@@ -166,7 +166,7 @@ const FONT5X7: [[u8; 7]; 32] = [
     [0b00000, 0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110],
     [0b00000, 0b00000, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000],
     [0b00000, 0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110],
-    [0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10000, 0b01110],
+    [0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10001, 0b01110],
     [0b00000, 0b00000, 0b11110, 0b10001, 0b10001, 0b11110, 0b10000],
     [0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111],
     [0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b10011, 0b01101],
@@ -187,7 +187,7 @@ fn glyph_index(c: char) -> usize {
         'A' => 0, 'B' => 1, 'D' => 2, 'E' => 3, 'H' => 30, 'I' => 4, 'L' => 5, 'N' => 6, 'P' => 7,
         'R' => 8, 'S' => 9, 'T' => 10, '0' => 11, '1' => 12, '8' => 13, '9' => 14, 'z' => 15,
         'e' => 16, 'r' => 17, 'o' => 18, '@' => 19, 'p' => 20, 'a' => 21, 'u' => 22, 'l' => 23,
-        'y' => 24, 'n' => 25, 'm' => 26, 'i' => 27, 'c' => 28, '.' => 29, _ => 30,
+        'y' => 24, 'n' => 25, 'm' => 26, 'i' => 27, 'c' => 28, '.' => 29, ' ' => 31, _ => 31,
     }
 }
 
@@ -275,10 +275,13 @@ pub fn render(field: &mut [u32; MAX_WORDS], _w: isize, _h: isize) {
 
     divider(field, 36);
 
-    // info lines: since when, how to reach us, and who presents
-    render_text5(field, "ESTABLISHED 1989", 16, 48, 6, 230);
+    // info lines: since when, how to reach us, and who presents.
+    // Solid ink (255): Bayer dithering at lower shades chips 5x7 strokes
+    // (the A's crossbar, the 9's tail). Dithering stays on the title
+    // gradient, the rules, and the checker strip where it belongs.
+    render_text5(field, "ESTABLISHED 1989", 16, 48, 6, 255);
     render_text5(field, "zero@paulynomial.com", 4, 64, 6, 255);
-    render_text5(field, "PRESENTS", 40, 106, 6, 210);
+    render_text5(field, "PRESENTS", 40, 106, 6, 255);
 
     // footer rule + shaded strip
     divider(field, 98);

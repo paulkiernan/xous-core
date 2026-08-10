@@ -1,0 +1,12 @@
+[package]
+name = "splash-gen"
+version = "0.1.0"
+edition = "2021"
+description = "Renders the ZEROCOOL splash card to splash.png (for review) and splash_img.rs (embedded in the badge app)"
+license = "Apache-2.0"
+publish = false
+
+# standalone crate: not part of the xous-core workspace
+[workspace]
+
+[dependencies]

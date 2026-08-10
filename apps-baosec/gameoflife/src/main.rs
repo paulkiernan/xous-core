@@ -26,7 +26,7 @@ use xous::Message;
 
 #[cfg(not(feature = "hosted-baosec"))]
 mod power;
-mod splash;
+mod splash_img;
 
 const MAX_W: isize = 128;
 const MAX_H: isize = 128;
@@ -256,12 +256,12 @@ impl Gol {
         }
     }
 
-    /// render the ZEROCOOL splash into the bitboard and display it; the
-    /// splash pixels become the simulation's initial population
+    /// load the pre-rendered ZEROCOOL splash into the bitboard and display
+    /// it; the splash pixels become the simulation's initial population
     fn show_splash(&mut self) {
-        splash::render(&mut self.cur, self.w, self.h);
+        self.cur.copy_from_slice(&splash_img::SPLASH_IMG);
         let n: u32 = self.cur.iter().map(|w| w.count_ones()).sum();
-        log::info!("splash rendered: {} on-pixels", n);
+        log::info!("splash loaded: {} on-pixels", n);
         self.draw();
     }
 }

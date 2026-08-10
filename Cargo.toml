@@ -140,6 +140,7 @@ resolver = "2"
 # Keep them out of the main workspace.
 exclude = [
   "utralib", # Exclude UTRA, since it is machine-generated.
+  "tools/splash-gen", # standalone host-side splash image generator (no workspace deps)
   "locales", # exclude because it is machine-generated
   "xtask",
   # exclude the API crates, as they are domiciled here but referenced via crates.io
