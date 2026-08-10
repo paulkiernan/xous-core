@@ -4,10 +4,12 @@
 // through the Gfx API served by bao-video (which owns the camera + OLED). This
 // app takes over the entire 128x128 framebuffer. On boot it shows a "ZEROCOOL"
 // cracktro-style splash card (dithered gradient title + small font captions);
-// after SPLASH_MS those very pixels become the initial population and a
+// After SPLASH_MS those very pixels become the initial population and a
 // toroidal life field evolves at ~4.5 generations/second. Each frame clears to
 // black, batches the live cells as 1px filled rectangles in white (flushing
 // the list when it nears a page), then flushes the framebuffer to the display.
+// A background thread also runs a WS2812 color wheel on the badge's LED chain
+// (see leds.rs) while the simulation runs; both pause when the badge idles.
 //
 // Power management mirrors the stock badge firmware: the LIS2DH12 accelerometer
 // motion interrupt is routed to this app; when the badge hasn't moved for
@@ -26,6 +28,8 @@ use xous::Message;
 
 #[cfg(not(feature = "hosted-baosec"))]
 mod power;
+#[cfg(feature = "board-baosec")]
+mod leds;
 mod splash_img;
 
 const MAX_W: isize = 128;
@@ -222,6 +226,8 @@ impl Gol {
     fn enter_idle(&mut self) {
         log::info!("no motion for {}s -- idle (screen off)", IDLE_SECS);
         self.idle = true;
+        #[cfg(feature = "board-baosec")]
+        leds::IDLE.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(cid) = self.pump_cid {
             xous::send_message(
                 cid,
@@ -243,6 +249,8 @@ impl Gol {
         if self.idle {
             log::info!("motion detected -- waking up");
             self.idle = false;
+            #[cfg(feature = "board-baosec")]
+            leds::IDLE.store(false, std::sync::atomic::Ordering::Relaxed);
             #[cfg(feature = "board-baosec")]
             self.gfx.set_power(true).ok();
             if let Some(cid) = self.pump_cid {
@@ -332,6 +340,8 @@ fn main() -> ! {
 
     let mut gol = Gol::new(gfx, screensize);
     gol.show_splash(); // ZEROCOOL card; its pixels seed the simulation
+    #[cfg(feature = "board-baosec")]
+    leds::start(); // color wheel on the badge's LED chain (BIO core)
 
     // accelerometer motion wake (badge only; no-op on the emulator)
     gol.arm_power(sid);

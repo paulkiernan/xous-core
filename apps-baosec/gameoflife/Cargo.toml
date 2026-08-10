@@ -14,13 +14,17 @@ ticktimer-server = { package = "xous-api-ticktimer", version = "0.9.70" }
 ux-api = { path = "../../libs/ux-api" }
 bao1x-api = { path = "../../libs/bao1x-api" }
 bao1x-hal = { path = "../../libs/bao1x-hal", features = ["sensor-lis2dh12"] }
+bio-lib = { path = "../../libs/bio-lib", features = ["ws2812"], optional = true }
+arbitrary-int = { version = "1.2", optional = true }
 
 [features]
 default = []
 # build-time features injected by the xtask for each target; declared here so
 # cargo accepts them when building this app as part of a baosec image
 hosted-baosec = []
-board-baosec = []
+# the LED color wheel (bio-lib ws2812) only builds on the badge: the BIO
+# subsystem doesn't exist in the hosted emulator
+board-baosec = ["dep:bio-lib", "dep:arbitrary-int"]
 oem-baosec-lite = []
 bao1x = []
 swap = []
